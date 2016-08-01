@@ -1,6 +1,9 @@
 import numpy as np
 
 from scipy.optimize import minimize
+from scipy import optimize
+import cma
+
 import math
 from sys import stdout
 
@@ -47,7 +50,7 @@ class MixtureOfSubspaces:
         mixture_prediction = np.sum(g * predictions, axis=0)
         if self.task_type == CLASSIFICATION:
             # mixture_prediction = mixture_prediction - np.max(mixture_prediction, axis=0)
-            mixture_prediction = mixture_prediction / 1000.0
+            # mixture_prediction = mixture_prediction / 1000.0
             mixture_prediction = softmax(mixture_prediction)
         mixture_prediction = mixture_prediction.T
 
@@ -155,8 +158,8 @@ class MixtureOfSubspaces:
                     out_m = self.M[e].dot(X[i])
                     Wx[e] = out_w[:,0]
                     Mx[e] = out_m[:]
-                Wx = Wx / 1000.0
-                Mx = Mx / 1000.0
+                # Wx = Wx / 1000.0
+                # Mx = Mx / 1000.0
                 Wx_g = Wx * g[:,:,i]
                 e_Mx = np.exp( Mx )
                 phi = np.exp( np.sum(Wx_g, axis=0) ).reshape( (self.num_outputs, 1))
@@ -193,34 +196,49 @@ class MixtureOfSubspaces:
 
 
 
-
+    def error_function(self, x, *args):
+        X, Y, X_proj = args
+        w_params = np.asarray( x[:self.W.shape[0]*self.W.shape[1]*self.W.shape[2]] )
+        m_params = np.asarray( x[self.W.shape[0]*self.W.shape[1]*self.W.shape[2]:] )
+        self.W = w_params.reshape( self.W.shape )
+        self.M = m_params.reshape( self.M.shape )
+        prediction = self.make_prediction(X, X_proj)
+        error = self._compute_error(Y, prediction)
+        print "Error ", error
+        return  error
 
     def train_mixture(self, X, Y, X_proj):
+
+        params = self.W.flatten()
+        params = np.hstack( (params, self.M.flatten()))
+        result = cma.fmin(objective_function=self.error_function, x0=params.tolist(), sigma0=1.0, options={'maxiter':20}, args=(X,Y,X_proj))
+        # result = optimize.fmin_bfgs(f=self.error_function, x0=[ params ], epsilon=0.1, args=(X,Y,X_proj))
         
-        current_error = float("inf")
-        while True:
-            predictions = self._make_experts_prediction(X, X_proj)
-            g = self._gating_weights(X, len(X_proj))
-            mixture_prediction = np.sum(g * predictions, axis=0)
-            if self.task_type == CLASSIFICATION:
-                # mixture_prediction = mixture_prediction - np.max(mixture_prediction, axis=0)
-                mixture_prediction = mixture_prediction / 1000.0
-                mixture_prediction = softmax(mixture_prediction)
-            mixture_prediction = mixture_prediction.T
-
-            loss = self._compute_error(Y, mixture_prediction)
-            print "loss ", loss
-            print "Sum loss ", np.sum(loss)
-
-            grad_w, grad_m = self._compute_gradient(g, Y, X, X_proj, mixture_prediction)
-            # grad_w_est = self.estimate_gradient_W(X, X_proj, Y, loss)
-            # grad_m_est = self.estimate_gradient_M(X, X_proj, Y, loss)
-
-            alpha = self._line_search(loss, grad_w, grad_m, X, Y, X_proj)
-            self.W -= alpha * grad_w
-            self.M -= alpha * grad_m
-
-            if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.000001:
-                print "Training finished..."
-                break
-            current_error = loss
+        # current_error = float("inf")
+        # while True:
+        #     predictions = self._make_experts_prediction(X, X_proj)
+        #     g = self._gating_weights(X, len(X_proj))
+        #     mixture_prediction = np.sum(g * predictions, axis=0)
+        #     if self.task_type == CLASSIFICATION:
+        #         # mixture_prediction = mixture_prediction - np.max(mixture_prediction, axis=0)
+        #         # mixture_prediction = mixture_prediction / 1000.0
+        #         mixture_prediction = softmax(mixture_prediction)
+        #     mixture_prediction = mixture_prediction.T
+        #
+        #     loss = self._compute_error(Y, mixture_prediction)
+        #     print "loss ", loss
+        #     print "Sum loss ", np.sum(loss)
+        #
+        #     grad_w, grad_m = self._compute_gradient(g, Y, X, X_proj, mixture_prediction)
+        #
+        #     # grad_w_est = self.estimate_gradient_W(X, X_proj, Y, loss)
+        #     # grad_m_est = self.estimate_gradient_M(X, X_proj, Y, loss)
+        #
+        #     alpha = self._line_search(loss, grad_w, grad_m, X, Y, X_proj)
+        #     self.W -= alpha * grad_w
+        #     self.M -= alpha * grad_m
+        #
+        #     if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.000001:
+        #         print "Training finished..."
+        #         break
+        #     current_error = loss
