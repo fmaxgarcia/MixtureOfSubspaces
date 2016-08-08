@@ -15,25 +15,30 @@ REGRESSION = 1
 
 class MixtureOfSubspaces:
 
-    def __init__(self, num_subspaces, proj_dimension, original_dimensions, num_outputs, task_type=REGRESSION):
+    def __init__(self, num_subspaces, proj_dimension, original_training, num_outputs, task_type=REGRESSION):
         '''
         subspaces: list of subspaces NxM, N samples, M dimensions
         '''
         #W experts weight matrix
         self.W = np.random.random( (num_subspaces, num_outputs, proj_dimension) )
         #g combination weight for predictors
-        self.M = np.random.random( (num_subspaces, num_outputs, original_dimensions) )
-        self.num_outputs =num_outputs
+        self.M = np.zeros( (num_subspaces, original_training.shape[1]) )
+        maxs = np.max(original_training, axis=0)
+        mins = np.min(original_training, axis=0)
+        step = (maxs - mins) / num_subspaces
+        for i in range(num_subspaces):
+            self.M[i,:] = (mins + (i*step)) - (step/2.0)
+
+        self.num_outputs = num_outputs
         self.task_type = task_type
 
 
     def _gating_weights(self, X, num_subspaces):
         ye = self.M.dot(X.T)
-        g = np.zeros( (num_subspaces, self.num_outputs, X.shape[0]))
-        for i in range(ye.shape[1]):
-            for k in range(ye.shape[2]):
-                ge = softmax( ye[:,i,k] - np.max(ye[:,i,k], axis=0) )
-                g[:,i, k] = ge
+        g = np.zeros( (num_subspaces, X.shape[0]))
+        for k in range(ye.shape[1]):
+            ge = softmax( ye[:,k] - np.max(ye[:,k], axis=0) )
+            g[:,k] = ge
         return g
 
     def _make_experts_prediction(self, X, X_proj):
@@ -47,10 +52,11 @@ class MixtureOfSubspaces:
     def make_prediction(self, X, X_proj):        
         predictions = self._make_experts_prediction(X, X_proj)
         g = self._gating_weights(X, len(X_proj))
-        mixture_prediction = np.sum(g * predictions, axis=0)
+        mixture_prediction = np.zeros( predictions.shape )
+        for i in range(predictions.shape[1]):
+            mixture_prediction[:,i,:] = (predictions[:,i,:] * g)
+        mixture_prediction = np.sum(mixture_prediction, axis=0)
         if self.task_type == CLASSIFICATION:
-            # mixture_prediction = mixture_prediction - np.max(mixture_prediction, axis=0)
-            # mixture_prediction = mixture_prediction / 1000.0
             mixture_prediction = softmax(mixture_prediction)
         mixture_prediction = mixture_prediction.T
 
@@ -129,7 +135,7 @@ class MixtureOfSubspaces:
         return m_grad
 
 
-    def _compute_gradient(self, g, Y, X, X_proj, mixture_prediction):
+    def _compute_gradient(self, g, Y, X, X_proj, mixture_prediction, predictions):
         grad_w = np.zeros( self.W.shape )
         grad_m = np.zeros( self.M.shape )
         if self.task_type == REGRESSION:
@@ -145,52 +151,24 @@ class MixtureOfSubspaces:
                     grad_m[k,l] = -np.mean(reshape_error * reshape_expert_error * X, axis=0)
         else:
             X_proj = np.asarray(X_proj)
-            for i in range( X_proj.shape[1]):
+            for i in range(X_proj.shape[1]):
                 stdout.write("\rInput - %d/%d" %(i, X_proj.shape[1]))
                 stdout.flush()
-                x = X_proj[:,i,:]
-                index = Y[i]
-                Wx = np.zeros( (self.W.shape[0], self.W.shape[1]))
-                Mx = np.zeros( (self.M.shape[0], self.M.shape[1]))
-                for e in range(x.shape[0]):
-                    xe = x[e].reshape( (x.shape[1], 1))
-                    out_w = self.W[e].dot(xe)
-                    out_m = self.M[e].dot(X[i])
-                    Wx[e] = out_w[:,0]
-                    Mx[e] = out_m[:]
-                # Wx = Wx / 1000.0
-                # Mx = Mx / 1000.0
-                Wx_g = Wx * g[:,:,i]
-                e_Mx = np.exp( Mx )
-                phi = np.exp( np.sum(Wx_g, axis=0) ).reshape( (self.num_outputs, 1))
-                g_reshape = g[:,index,i].reshape( (g.shape[0], 1))
+                correct_index = Y[i]
+                for k in range(self.W.shape[0]):
+                    sum_pred = 0.0
+                    for j in range(self.num_outputs):
+                        sum_pred += self.W[k, j].dot( X_proj[k, i] ) * mixture_prediction[i, j]
 
-                grad_1w = x * g_reshape
-                sum_phi_xg = np.zeros( grad_1w.shape )
-                for j in range(phi.shape[0]):
-                    sum_phi_xg += phi[j] * x * g[:,j,i].reshape( (g.shape[0], 1))
-                grad_2w = (1 / np.sum(phi)) * sum_phi_xg
-                grad_w[:,index,:] += -(grad_1w - grad_2w)
+                        if correct_index == j:
+                            grad_w[k,j] -= g[k,i] * X_proj[k,i] * (1 - mixture_prediction[i,correct_index])
+                        else:
+                            grad_w[k,j] -= (- X_proj[k,i] * g[k,i] * mixture_prediction[i,j])
+                    if correct_index == j:
+                        grad_m[k] -= ( self.W[k, correct_index].dot( X_proj[k,i] ) - sum_pred) * (X_proj[k,i] * g[k,i] * (1 - g[k,i]))
+                    else:
+                        grad_m[k] -=  ( self.W[k, correct_index].dot( X_proj[k,i] ) - sum_pred) * (-mixture_prediction[i, correct_index] * X_proj[k,i] * mixture_prediction[i, k])
 
-                grad_1m = np.zeros( (self.M.shape[0], self.M.shape[2]) )
-                grad_2m = np.zeros( (self.M.shape[0], self.M.shape[2]) )
-                sum_Wx = np.sum(Wx, axis=0)
-                for j in range(self.M.shape[0]):
-                    first_term = (Wx[j,:] - (sum_Wx[:] - Wx[j,:])).reshape((self.num_outputs, 1))
-                    ### For numerical stability #####
-                    # (np.prod(e_Mx, axis=0) / (np.sum(e_Mx, axis=0)**2)) same as log(np.prod(e_Mx, axis=0)) - 2 log(np.sum(e_Mx, axis=0))
-                    #eprod_reshape = (np.prod(e_Mx, axis=0) / (np.sum(e_Mx, axis=0)**2)).reshape( (self.num_outputs, 1) )
-                    numerator = np.sum(Mx, axis=0)
-                    denominator = 2*np.log(np.sum(e_Mx, axis=0))
-                    e_prod = np.exp(numerator - denominator).reshape( (self.num_outputs, 1) )
-                    #################################
-                    second_term = e_prod.dot( X[i].reshape( (X.shape[1], 1)).T )
-                    grad_1m[j] = first_term[index] * second_term[index]
-                    grad_2m[j] = (1 / np.sum(phi)) * ( np.sum(phi * first_term * second_term, axis=0) )
-
-                grad_m[:,index,:] += -(grad_1m - grad_2m)
-                if np.nonzero(np.isnan(grad_m))[0].shape[0] > 0:
-                    a = 2
 
         return grad_w, grad_m
 
@@ -209,36 +187,40 @@ class MixtureOfSubspaces:
 
     def train_mixture(self, X, Y, X_proj):
 
-        params = self.W.flatten()
-        params = np.hstack( (params, self.M.flatten()))
-        result = cma.fmin(objective_function=self.error_function, x0=params.tolist(), sigma0=1.0, options={'maxiter':20}, args=(X,Y,X_proj))
+        # params = self.W.flatten()
+        # params = np.hstack( (params, self.M.flatten()))
+        # # result = cma.fmin(objective_function=self.error_function, x0=params.tolist(), sigma0=1.0, options={'maxiter':20}, args=(X,Y,X_proj))
         # result = optimize.fmin_bfgs(f=self.error_function, x0=[ params ], epsilon=0.1, args=(X,Y,X_proj))
-        
-        # current_error = float("inf")
-        # while True:
-        #     predictions = self._make_experts_prediction(X, X_proj)
-        #     g = self._gating_weights(X, len(X_proj))
-        #     mixture_prediction = np.sum(g * predictions, axis=0)
-        #     if self.task_type == CLASSIFICATION:
-        #         # mixture_prediction = mixture_prediction - np.max(mixture_prediction, axis=0)
-        #         # mixture_prediction = mixture_prediction / 1000.0
-        #         mixture_prediction = softmax(mixture_prediction)
-        #     mixture_prediction = mixture_prediction.T
-        #
-        #     loss = self._compute_error(Y, mixture_prediction)
-        #     print "loss ", loss
-        #     print "Sum loss ", np.sum(loss)
-        #
-        #     grad_w, grad_m = self._compute_gradient(g, Y, X, X_proj, mixture_prediction)
-        #
-        #     # grad_w_est = self.estimate_gradient_W(X, X_proj, Y, loss)
-        #     # grad_m_est = self.estimate_gradient_M(X, X_proj, Y, loss)
-        #
-        #     alpha = self._line_search(loss, grad_w, grad_m, X, Y, X_proj)
-        #     self.W -= alpha * grad_w
-        #     self.M -= alpha * grad_m
-        #
-        #     if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.000001:
-        #         print "Training finished..."
-        #         break
-        #     current_error = loss
+
+        current_error = float("inf")
+        step = 0
+        while True:
+            predictions = self._make_experts_prediction(X, X_proj)
+            g = self._gating_weights(X, len(X_proj))
+            mixture_prediction = np.zeros( predictions.shape )
+            for i in range(predictions.shape[1]):
+                mixture_prediction[:,i,:] = (predictions[:,i,:] * g)
+            mixture_prediction = np.sum(mixture_prediction, axis=0)
+            if self.task_type == CLASSIFICATION:
+                mixture_prediction = softmax(mixture_prediction)
+            mixture_prediction = mixture_prediction.T
+
+            loss = self._compute_error(Y, mixture_prediction)
+            print "loss ", loss
+            print "Sum loss ", np.sum(loss)
+
+            grad_w, grad_m = self._compute_gradient(g, Y, X, X_proj, mixture_prediction, predictions)
+
+            # grad_w_est = self.estimate_gradient_W(X, X_proj, Y, loss)
+            # grad_m_est = self.estimate_gradient_M(X, X_proj, Y, loss)
+
+            alpha = self._line_search(loss, grad_w, grad_m, X, Y, X_proj)
+            self.W -= alpha * grad_w
+            if step % 2 == 0:
+                self.M -= alpha * grad_m
+            step += 1
+
+            if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.00000001:
+                print "Training finished..."
+                break
+            current_error = loss
