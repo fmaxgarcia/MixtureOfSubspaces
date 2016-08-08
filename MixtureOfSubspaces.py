@@ -167,9 +167,13 @@ class MixtureOfSubspaces:
                     if correct_index == j:
                         grad_m[k] -= ( self.W[k, correct_index].dot( X_proj[k,i] ) - sum_pred) * (X_proj[k,i] * g[k,i] * (1 - g[k,i]))
                     else:
-                        grad_m[k] -=  ( self.W[k, correct_index].dot( X_proj[k,i] ) - sum_pred) * (-mixture_prediction[i, correct_index] * X_proj[k,i] * mixture_prediction[i, k])
+                        grad_m[k] -=  ( self.W[k, correct_index].dot( X_proj[k,i] ) - sum_pred) * (-g[correct_index, i] * X_proj[k,i] * g[k, i])
 
-
+        if len(np.nonzero(np.isnan(grad_m))[0]) > 0 or len(np.nonzero(np.isnan(grad_w))[0]) > 0:
+            print np.nonzero(np.isnan(grad_m))
+            print np.nonzero(np.isnan(grad_w))
+            print "Nan grad"
+            assert False
         return grad_w, grad_m
 
 
@@ -216,8 +220,7 @@ class MixtureOfSubspaces:
 
             alpha = self._line_search(loss, grad_w, grad_m, X, Y, X_proj)
             self.W -= alpha * grad_w
-            if step % 2 == 0:
-                self.M -= alpha * grad_m
+            self.M -= alpha * grad_m
             step += 1
 
             if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.00000001:
