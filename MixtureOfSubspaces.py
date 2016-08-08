@@ -88,7 +88,7 @@ class MixtureOfSubspaces:
         if self.task_type == REGRESSION:
             return np.mean( (Y - prediction)**2, axis=0)
         elif self.task_type == CLASSIFICATION:
-            return -np.log( np.sum( prediction[np.arange(Y.shape[0]), Y] ) )
+            return -np.sum( np.log(prediction[np.arange(Y.shape[0]), Y] ) )
 
     def estimate_gradient_W(self, X, X_proj, Y, current_error):
         print "estimating gradient for W"
@@ -223,7 +223,7 @@ class MixtureOfSubspaces:
             self.M -= alpha * grad_m
             step += 1
 
-            if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.00000001:
+            if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.0001:
                 print "Training finished..."
                 break
             current_error = loss
