@@ -88,7 +88,7 @@ class MixtureOfSubspaces:
         if self.task_type == REGRESSION:
             return np.mean( (Y - prediction)**2, axis=0)
         elif self.task_type == CLASSIFICATION:
-            return -np.sum( np.log(prediction[np.arange(Y.shape[0]), Y] ) )
+            return -np.sum( np.log(prediction[np.arange(Y.shape[0]), Y] ) ) #+ (0.025 * np.linalg.norm(self.W)**2)
 
 
     def _compute_gradient(self, g, Y, X, X_proj, mixture_prediction, predictions):
@@ -117,9 +117,9 @@ class MixtureOfSubspaces:
                         sum_pred += self.W[k, j].dot( X_proj[k, i] ) * mixture_prediction[i, j]
 
                         if correct_index == j:
-                            grad_w[k,j] -= g[k,i] * X_proj[k,i] * (1 - mixture_prediction[i,correct_index])
+                            grad_w[k,j] += -(g[k,i] * X_proj[k,i] * (1 - mixture_prediction[i,correct_index])) #+ (0.05 * self.W[k,j])
                         else:
-                            grad_w[k,j] -= (- X_proj[k,i] * g[k,i] * mixture_prediction[i,j])
+                            grad_w[k,j] += -((- X_proj[k,i] * g[k,i] * mixture_prediction[i,j])) #+ (0.05 * self.W[k,j])
                     if correct_index == j:
                         grad_m[k] -= ( self.W[k, correct_index].dot( X_proj[k,i] ) - sum_pred) * (X_proj[k,i] * g[k,i] * (1 - g[k,i]))
                     else:
@@ -134,32 +134,20 @@ class MixtureOfSubspaces:
 
 
 
-    def error_function(self, x, *args):
-        X, Y, X_proj = args
-        w_params = np.asarray( x[:self.W.shape[0]*self.W.shape[1]*self.W.shape[2]] )
-        m_params = np.asarray( x[self.W.shape[0]*self.W.shape[1]*self.W.shape[2]:] )
-        self.W = w_params.reshape( self.W.shape )
-        self.M = m_params.reshape( self.M.shape )
-        prediction = self.make_prediction(X, X_proj)
-        error = self._compute_error(Y, prediction)
-        print "Error ", error
-        return  error
-
     def train_mixture(self, X, Y, X_proj):
 
         current_error = float("inf")
-        current_test_error = float("inf")
-        step = 0
-        train_x = X[X.shape[0]/4:]
-        train_y = Y[X.shape[0]/4:]
-        X_proj_train = [proj[X.shape[0]/4:] for proj in X_proj]
-        test_x = X[:X.shape[0]/4]
-        test_y = Y[:X.shape[0]/4]
-        X_proj_test = [proj[:X.shape[0]/4] for proj in X_proj]
+        # current_test_error = float("inf")
+        # train_x = X[X.shape[0]/4:]
+        # train_y = Y[X.shape[0]/4:]
+        # X_proj_train = [proj[X.shape[0]/4:] for proj in X_proj]
+        # test_x = X[:X.shape[0]/4]
+        # test_y = Y[:X.shape[0]/4]
+        # X_proj_test = [proj[:X.shape[0]/4] for proj in X_proj]
 
         while True:
-            predictions = self._make_experts_prediction(train_x, X_proj_train)
-            g = self._gating_weights(train_x, len(X_proj_train))
+            predictions = self._make_experts_prediction(X, X_proj)
+            g = self._gating_weights(X, len(X_proj))
             mixture_prediction = np.zeros( predictions.shape )
             for i in range(predictions.shape[1]):
                 mixture_prediction[:,i,:] = (predictions[:,i,:] * g)
@@ -168,30 +156,19 @@ class MixtureOfSubspaces:
                 mixture_prediction = softmax(mixture_prediction)
             mixture_prediction = mixture_prediction.T
 
-            loss = self._compute_error(train_y, mixture_prediction)
+            loss = self._compute_error(Y, mixture_prediction)
             print "loss ", loss
             print "Sum loss ", np.sum(loss)
 
-            grad_w, grad_m = self._compute_gradient(g, train_y, train_x, X_proj_train, mixture_prediction, predictions)
+            grad_w, grad_m = self._compute_gradient(g, Y, X, X_proj, mixture_prediction, predictions)
 
-            # grad_w_est = self.estimate_gradient_W(X, X_proj, Y, loss)
-            # grad_m_est = self.estimate_gradient_M(X, X_proj, Y, loss)
-
-            alpha = self._line_search(loss, grad_w, grad_m, train_x, train_y, X_proj_train)
+            alpha = self._line_search(loss, grad_w, grad_m, X, Y, X_proj)
             self.W -= alpha * grad_w
             self.M -= alpha * grad_m
-            step += 1
 
-            test_prediction = self.make_prediction(test_x, X_proj_test)
-            test_loss = self._compute_error(test_y, test_prediction)
-            print "Test loss ", test_loss
-            if test_loss <  current_test_error:
-                print "New best parameters\n"
-                current_test_error = test_loss
+            if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.0001:
                 self.bestW = self.W.copy()
                 self.bestM = self.M.copy()
-
-            if math.fabs(np.sum(loss) - np.sum(current_error)) < 0.00001:
                 print "Training finished..."
                 break
             current_error = loss
